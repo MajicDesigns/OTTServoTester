@@ -54,6 +54,11 @@ Sweep:  Sweep mode display shows the same information as Manual mode display, wi
 Rcv Check: Rcv Check displays the signal characteristics from a servo controller connected to the RCV_PIN
         input. Signal high and low durations are displayed in real time.
 
+ESC Setup: ESC (Electronic Speed Controller) setup allows the togglong of one of the outputs between high 
+         and low as is normally required for ESC setup through a receiver. The ESC will be emitting tones 
+         to guide you through a menu of options according to the specifics of the ESC (see appropriate ESC
+         documentation). The output for the ESC can be selected by turning the rotary encoder.
+
 The application code is configured to allow for up to MAX_SERVO servos to be attached for testing.
 The actual number of active servos is set by the NUM_SERVO (<= MAX_SERVO) constant. Each of the 
 Servo outputs (labeled Output A through F) is associated with a servo profile. 
@@ -73,7 +78,8 @@ as 'disabled' and will not receive control signals.
 The user interface (UI) is implemented using the rotary encoder and a separate tact switch (Run switch).
 In general the UI navigation operates as follows:
  * Cycle between modes by double pressing the encoder switch.
- * The Run Switch is used to run/stop execution in the mode (if applicable).
+ * The Run Switch is used to run/stop execution in the mode (if applicable). A long press of the run 
+   switch will immediately return the application to Manual mode.
  * The Configuration Menu only uses the encoder, accessed from Manual mode using a long press of the 
    encoder switch.
      - The top line of the display is the menu/submenu name or the value being edited.
@@ -101,6 +107,9 @@ Library Dependencies
 
 Version History
 ---------------
+Dec 2020 v1.1.0
+- Added ESC setup mode
+
 Nov 2020 v1.0.0
 - First Release
 
@@ -136,8 +145,9 @@ Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
 // Application options
 const uint8_t MAX_SERVO = 6;   // Maximum number of servos allowed for. NUM_SERVO sets the actual number (below).
 
-#define DEBUG  0   // enable debugging output
+#define DEBUG   0  // enable debugging output
 #define USE_RCV 1  // enable the Receiver functionality
+#define USE_ESC 1  // enable the ESC setup functionality
 
 #if DEBUG
 #define PRINT(s, n)  do { Serial.print(F(s)); Serial.print(n); } while (false);
@@ -152,7 +162,7 @@ const uint8_t MAX_SERVO = 6;   // Maximum number of servos allowed for. NUM_SERV
 //----------------------------------------------------------
 // Miscellaneous definitions/variables
 #define APP_NAME "OTT Servo Tester"
-#define APP_VER  "v1.0.0"
+#define APP_VER  "v1.1.0"
 
 typedef const char PROGMEM message_t;	// pointer to flash memory string
 
@@ -160,9 +170,8 @@ enum:uint8_t
 { 
   RUN_MANUAL_INIT, RUN_MANUAL,
   RUN_SWEEP_INIT, RUN_SWEEP_WAITING, RUN_SWEEP,
-#if USE_RCV
   RUN_RCHECK_INIT, RUN_RCHECK, RUN_RCHECK_PAUSE,
-#endif
+  RUN_ESC_INIT, RUN_ESC,
   RUN_MENU_INIT, RUN_MENU
 } runMode = RUN_MANUAL_INIT;
 bool dataChanged = true;    // flag for new data to display
@@ -174,7 +183,7 @@ const uint16_t SERVO_LOWER_HARDLIMIT = 500;  // servo abs lower hard limit
 const uint16_t SERVO_UPPER_HARDLIMIT = 2500; // servo abs upper hard limit
 
 const uint8_t NUM_SERVO = MAX_SERVO;         // number of physical servos (can be [1..MAX_SERVO-1])
-const uint8_t SERVO_PIN[MAX_SERVO] = { 2, 3, 4, 5, 6, 7 };  // only NUM_SERVO are relevant
+const uint8_t SERVO_PIN[MAX_SERVO] = { 2, 3, 4, 5, 6, 7 };  // only NUM_SERVO pins are relevant
 
 const uint8_t NUM_PROFILE = 3;       // number of available profiles - also adjust selProfile below
 message_t selProfile[] = "-|1|2|3";  // menu selection data for profile - adjust to allow NUM_PROFILE selections
@@ -186,9 +195,9 @@ const uint8_t SWP_SQUARE = 2;   // index 2
 
 Servo servo[NUM_SERVO];
 
-#if USE_RCV
 //----------------------------------------------------------
 // Receiver Signal Test
+#if USE_RCV
 const uint8_t RCV_PIN = 11;
 const uint32_t RCV_PAUSE_TIME = 500; // milliseconds pause between readings
 
@@ -201,6 +210,13 @@ struct
 #endif
 
 //----------------------------------------------------------
+// ESC Setup
+#if USE_ESC
+uint8_t escOutput;     // output used for ESC setup
+bool    escState;      // currently high or low
+#endif
+
+//----------------------------------------------------------
 // Menu Rotary Encoder Interface I/O
 const uint8_t MENU_SEL = A2;   // Selection switch on encoder
 const uint8_t MENU_RUN = A3;   // Run start/stop
@@ -209,7 +225,7 @@ const uint8_t MENU_ENC_B = A0; // Encoder Channel B
 
 MD_REncoder encMenu(MENU_ENC_A, MENU_ENC_B);
 MD_UISwitch_Digital swMenuSel(MENU_SEL);
-MD_UISwitch_Digital swMenuMode(MENU_RUN);
+MD_UISwitch_Digital swMenuRun(MENU_RUN);
 uint8_t displayPageBase = 0;   // base index for servo disaply page
 
 //----------------------------------------------------------
@@ -273,6 +289,7 @@ public:
       uint16_t sweepTime;  // duration in milliseconds for one low->high or high->low sweep
       uint16_t sweepPause; // pause between sweep movements in milliseconds
     } profile[NUM_PROFILE];
+
   } data;
 
   // Methods ------------------------------------
@@ -573,17 +590,21 @@ MD_Menu::userNavAction_t menuNav(uint16_t& incDelta)
 void encoderMenuUI(void)
 // Read the menu encoder. 
 // This is called from user code only when MENU IS NOT ENABLED,
-// to handle the main display
+// to handle the main display and other interactions, depending 
+// on current running state.
 {
   MD_UISwitch::keyResult_t	k;
   uint8_t enc;
 
-  // check the mode switch first
-  if ((k = swMenuMode.read()) != MD_UISwitch::KEY_NULL)
+  // check the run switch first
+  if ((k = swMenuRun.read()) != MD_UISwitch::KEY_NULL)
   {
     switch (k)
     {
-    case MD_UISwitch::KEY_LONGPRESS: break;
+    case MD_UISwitch::KEY_LONGPRESS: 
+      runMode = RUN_MANUAL_INIT;
+      break;
+
     case MD_UISwitch::KEY_DPRESS: break;
 
     case MD_UISwitch::KEY_PRESS:
@@ -594,6 +615,9 @@ void encoderMenuUI(void)
       case RUN_MANUAL:        PRINTS("Servos home"); setAllServoHome();           break;
       case RUN_SWEEP_WAITING: PRINTS("SWEEP_RUN");   runMode = RUN_SWEEP;         break;
       case RUN_SWEEP:         PRINTS("SWEEP_WAIT");  runMode = RUN_SWEEP_WAITING; break;
+#if USE_ESC
+      case RUN_ESC:           PRINTS("ESC Toggle");  escState = !escState;        break;
+#endif
       default: PRINTS("UNHANDLED!!");  break;
       }
       dataChanged = true;
@@ -626,12 +650,9 @@ void encoderMenuUI(void)
       switch (runMode)
       {
       case RUN_MANUAL:        PRINTS("SWEEP_INIT");  runMode = RUN_SWEEP_INIT;  break;
-#if USE_RCV
       case RUN_SWEEP_WAITING: PRINTS("RCHECK_INIT"); runMode = RUN_RCHECK_INIT; break;
-      case RUN_RCHECK_PAUSE:  PRINTS("RUN_MANUAL");  runMode = RUN_MANUAL;      break;
-#else
-      case RUN_SWEEP_WAITING: PRINTS("RUN_MANUAL");  runMode = RUN_MANUAL;      break;
-#endif
+      case RUN_RCHECK_PAUSE:  PRINTS("RUN_ESC_INIT");runMode = RUN_ESC_INIT;    break;
+      case RUN_ESC:           PRINTS("RUN_MANUAL");  runMode = RUN_MANUAL_INIT; break;
       default: PRINTS("UNHANDLED!!");  break;
       }
       dataChanged = true;
@@ -667,6 +688,24 @@ void encoderMenuUI(void)
                 servoData[s].setV -= inc;
           }
         }
+#if USE_ESC
+        else if (runMode == RUN_ESC)
+        {
+          // Move on to the next output, but only if that output is enabled
+          // In the case that no output is enabled, we shold only check NUM_SERVO
+          // times before giving up.
+          for (uint8_t i = 0; i < NUM_SERVO; i++)
+          {
+            if (escOutput == 0) escOutput = NUM_SERVO; // reset to end
+            escOutput--;
+            if (C.data.servo[escOutput].enabled)
+            {
+              dataChanged = true;
+              break;
+            }
+          }
+        }
+        #endif
         break;
 
       case DIR_CW:
@@ -679,6 +718,24 @@ void encoderMenuUI(void)
                 servoData[s].setV += inc;
           }
         }
+#if USE_ESC
+        else if (runMode == RUN_ESC)
+        {
+          // Move on to the next output, but only if that output is enabled
+          // In the case that no output is enabled, we shold only check NUM_SERVO
+          // times before giving up.
+          for (uint8_t i = 0; i < NUM_SERVO; i++)
+          {
+            escOutput++;
+            if (escOutput >= NUM_SERVO) escOutput = 0; // reset to start
+            if (C.data.servo[escOutput].enabled)
+            {
+              dataChanged = true;
+              break;
+            }
+          }
+        }
+#endif
         break;
       }
     }
@@ -1027,78 +1084,86 @@ void displayRefresh(bool forceUpdate = false)
   lcd.clear(); // scrub everything
 
   // Show the correct display
+  switch (runMode)
+  {
 #if USE_RCV
-  if (runMode == RUN_RCHECK_PAUSE)    // Receiver check display
-  {
-    LCD_PRINT(0, 0, F("H:"));
-    showNumber(3, 0, rcvCheckData.timeSig, 4);
-    LCD_PRINT(7, 0, F("us"));
-    LCD_PRINT(0, 1, F("L:"));
-    showNumber(2, 1, rcvCheckData.timeGap, 5);
-    LCD_PRINT(7, 1, F("us"));
-    if (rcvCheckData.timeGap != 0)
+    case RUN_RCHECK_PAUSE: // Receiver check display
     {
-      showNumber(12, 1, 1000000UL / (rcvCheckData.timeGap * rcvCheckData.timeSig), 2);   // convert to Hz
-      LCD_PRINT(14, 1, F("Hz"));
-    }
-  }
-  else                          // Normal status display
-#endif
-  {
-    for (uint8_t i = displayPageBase; i < displayPageBase + LCD_ROWS; i++)
-    {
-      if (i >= NUM_SERVO) break;    // more than the number of configured servo
-
-      uint8_t r = i % LCD_ROWS;
-
-      LCD_PRINT(0, r, (char)('A' + i));
-
-      // enabled or attached profile indicator
-      if (C.data.servo[i].enabled)
+      LCD_PRINT(0, 0, F("H:"));
+      showNumber(3, 0, rcvCheckData.timeSig, 4);
+      LCD_PRINT(7, 0, F("us"));
+      LCD_PRINT(0, 1, F("L:"));
+      showNumber(2, 1, rcvCheckData.timeGap, 5);
+      LCD_PRINT(7, 1, F("us"));
+      if (rcvCheckData.timeGap != 0)
       {
-        LCD_PRINT(1, r, char('1' + C.data.servo[i].profileId));
-
-        // the current value in milliseconds
-        showNumber(3, r, servoData[i].curV, 4);
-
-        // the current value in % - printed by each digit in reverse order
-        uint8_t id = C.data.servo[i].profileId;
-        uint16_t pct = (100L * (servoData[i].curV - C.data.profile[id].low)) / (C.data.profile[id].high - C.data.profile[id].low);
-
-        LCD_PRINT(11, r, '%');
-        showNumber(8, r, pct, 3);
+        showNumber(12, 1, 1000000UL / (rcvCheckData.timeGap * rcvCheckData.timeSig), 2);   // convert to Hz
+        LCD_PRINT(14, 1, F("Hz"));
       }
-      else
-        LCD_PRINT(1, r, '-');   // not enabled
     }
+    break;
+#endif
+
+#if USE_ESC
+    case RUN_ESC:
+    {
+      LCD_PRINT(0, 0, "Output");
+      LCD_WRITE(7, 0, (char)(escOutput + 'A'));
+      LCD_PRINT(0, 1, escState ? "HI" : "LO");
+    }
+    break;
+#endif
+
+    default:    // Normal status display
+    {
+      for (uint8_t i = displayPageBase; i < displayPageBase + LCD_ROWS; i++)
+      {
+        if (i >= NUM_SERVO) break;    // more than the number of configured servo
+
+        uint8_t r = i % LCD_ROWS;
+
+        LCD_WRITE(0, r, (char)('A' + i));
+
+        // enabled or attached profile indicator
+        if (C.data.servo[i].enabled)
+        {
+          LCD_WRITE(1, r, (char)('1' + C.data.servo[i].profileId));
+
+          // the current value in milliseconds
+          showNumber(3, r, servoData[i].curV, 4);
+
+          // the current value in % - printed by each digit in reverse order
+          uint8_t id = C.data.servo[i].profileId;
+          uint16_t pct = (100L * (servoData[i].curV - C.data.profile[id].low)) / (C.data.profile[id].high - C.data.profile[id].low);
+
+          LCD_PRINT(11, r, '%');
+          showNumber(8, r, pct, 3);
+        }
+        else
+          LCD_PRINT(1, r, '-');   // not enabled
+      }
+    }
+    break;
   }
 
   // Show the current execution mode
+  const char *psz;
+
   switch (runMode)
   {
   case RUN_MANUAL_INIT:
-  case RUN_MANUAL:
-    LCD_PRINT(LCD_COLS-3, 0, "Man");
-    break;
-
+  case RUN_MANUAL:       psz = "Man";    break;
   case RUN_SWEEP_INIT:
   case RUN_SWEEP_WAITING:
-  case RUN_SWEEP:
-    LCD_PRINT(LCD_COLS-3, 0, "Swp");
-    break;
-
-#if USE_RCV
+  case RUN_SWEEP:        psz = "Swp";    break;
   case RUN_RCHECK_INIT:
   case RUN_RCHECK:
-  case RUN_RCHECK_PAUSE:
-    LCD_PRINT(LCD_COLS-3, 0, "Rcv");
-    break;
-#endif
-
-  default:
-    //LCD_PRINT(LCD_COLS-3, 0, "???");
-    break;
+  case RUN_RCHECK_PAUSE: psz = "Rcv";    break;
+  case RUN_ESC_INIT:
+  case RUN_ESC:          psz = "ESC";    break;
+  default:               psz = "???";    break;
   }
+  LCD_PRINT(LCD_COLS - 3, 0, psz);
 }
 
 // Control Code
@@ -1136,12 +1201,16 @@ void setup(void)
     hd44780::fatalError(status); // does not return
   }
 
-  // Switches and encoder
-  swMenuMode.begin();   // Menu pager switch
-  swMenuSel.begin();    // Menu rotary encoder switch
+  // UI Switches and encoder
+  swMenuRun.begin();   // Run switch
+  swMenuRun.enableRepeat(false);
+  swMenuRun.setLongPressTime(2000);
+
+  swMenuSel.begin();    // Rotary encoder switch
   swMenuSel.enableRepeat(false);
   swMenuSel.setLongPressTime(2000);
-  encMenu.begin();      // Menu rotary encoder
+
+  encMenu.begin();      // Rotary encoder
 
   menuDisplay(MD_Menu::DISP_INIT);  // lcd display
   M.begin();        // Menu subsystem
@@ -1218,14 +1287,18 @@ void loop(void)
       encoderMenuUI();
       break;
 
-#if USE_RCV
     // RECEIVER CHECK mode ----------------------
     case RUN_RCHECK_INIT:
       PRINTS("\n> RCHECK INIT");
+#if USE_RCV
       rcvCheckData.timeSig = rcvCheckData.timeGap = 0;
       runMode = RUN_RCHECK;
+#else
+      runMode = RUN_ESC_INIT;
+#endif
       break;
 
+#if USE_RCV
     case RUN_RCHECK:
       rcvCheckData.timeSig = pulseIn(RCV_PIN, HIGH, 100000UL);
       rcvCheckData.timeGap = pulseIn(RCV_PIN,  LOW, 100000UL);
@@ -1238,6 +1311,25 @@ void loop(void)
       if (millis() - rcvCheckData.timePause >= RCV_PAUSE_TIME)
         runMode = RUN_RCHECK;
       encoderMenuUI();
+      break;
+#endif
+
+    // ESC mode ---------------------------------
+    case RUN_ESC_INIT:
+      PRINTS("\n> ESC INIT");
+#if USE_ESC
+      escState = true;    // always start sequence with this HIGH
+      runMode = RUN_ESC;
+#else
+      runMode = RUN_MANUAL_INIT;
+#endif
+      break;
+
+#if USE_ESC
+    case RUN_ESC:
+      encoderMenuUI();
+      if (C.data.servo[escOutput].enabled)
+        setServoSPPct(escOutput, escState ? 100 : 0);
       break;
 #endif
 
