@@ -2,7 +2,7 @@
 
 Arduino sketch to test and calibrate micro (RC) servos.
 
-The application can work in Manual, Sweep or Receiver Check modes.
+The application can work in Manual, Sweep, Receiver Check and ESC setup modes.
 
 ## Hardware Requirements
 
